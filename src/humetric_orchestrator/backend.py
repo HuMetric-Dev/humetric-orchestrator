@@ -172,7 +172,8 @@ class AnthropicBackend:
             f"Query: {query}\n\n"
             f"Candidates:\n{bullets}\n\n"
             "For each candidate, write a 1-2 sentence explanation of why they match. "
-            'Respond with a JSON array of {"person_id": str, "text": str}. No prose.'
+            'Respond with a JSON object: {"explanations": [{"person_id": str, "text": str}, ...]}. '
+            "No prose."
         )
 
         try:
@@ -261,7 +262,8 @@ class OpenAIBackend:
         prompt = (
             f"Query: {query}\n\nCandidates:\n{bullets}\n\n"
             "For each candidate, write a 1-2 sentence explanation of why they match. "
-            'Respond with a JSON array of {"person_id": str, "text": str}. No prose.'
+            'Respond with a JSON object: {"explanations": [{"person_id": str, "text": str}, ...]}. '
+            "No prose."
         )
         try:
             import openai

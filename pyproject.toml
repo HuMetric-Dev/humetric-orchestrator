@@ -11,12 +11,14 @@ dependencies = [
     "humetric-retrieval>=0.1,<0.2",
     "humetric-ranking>=0.1,<0.2",
     "humetric-embed>=0.1,<0.2",
-    "anthropic>=0.39,<1",
     "openai>=1.40,<2",
     "numpy>=1.26,<3",
 ]
 
 [project.optional-dependencies]
+anthropic = [
+    "anthropic>=0.39,<1",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.5",

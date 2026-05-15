@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -390,7 +390,6 @@ name = "humetric-orchestrator"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "anthropic" },
     { name = "humetric-core" },
     { name = "humetric-embed" },
     { name = "humetric-ranking" },
@@ -400,6 +399,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+anthropic = [
+    { name = "anthropic" },
+]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
@@ -408,7 +410,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.39,<1" },
+    { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.39,<1" },
     { name = "humetric-core", editable = "../humetric-core" },
     { name = "humetric-embed", editable = "../humetric-embed" },
     { name = "humetric-ranking", editable = "../humetric-ranking" },
@@ -419,7 +421,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.35" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["anthropic", "dev"]
 
 [[package]]
 name = "humetric-ranking"

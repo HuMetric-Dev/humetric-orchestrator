@@ -42,6 +42,31 @@ class Explanation:
     text: str
 
 
+# Pinned in a module-level constant so a regression test can catch a regex of
+# this language going missing. The "say what they do have" framing is what
+# preserves honest-negative explanations on weak retrieval matches — without
+# it, models tend to invent skills to satisfy the implicit "why they match"
+# framing.
+_EXPLANATIONS_GROUNDING_RULE = (
+    "Base each explanation only on the candidate text shown above. Do not "
+    "invent skills, experience, or attributes that aren't there. If the "
+    "candidate doesn't clearly match the query, say what they do have "
+    "instead of forcing a positive match."
+)
+
+
+def _build_explanations_prompt(query: str, candidates: list[tuple[str, str]]) -> str:
+    bullets = "\n".join(f"- {pid}: {text[:300]}" for pid, text in candidates)
+    return (
+        f"Query: {query}\n\n"
+        f"Candidates:\n{bullets}\n\n"
+        "For each candidate, write a 1-2 sentence explanation of why they match. "
+        f"{_EXPLANATIONS_GROUNDING_RULE} "
+        'Respond with a JSON object: {"explanations": [{"person_id": str, "text": str}, ...]}. '
+        "No prose."
+    )
+
+
 class LLMBackend(Protocol):
     name: str
 
@@ -167,14 +192,7 @@ class AnthropicBackend:
             return client_r
         client = client_r.value
 
-        bullets = "\n".join(f"- {pid}: {text[:300]}" for pid, text in candidates)
-        prompt = (
-            f"Query: {query}\n\n"
-            f"Candidates:\n{bullets}\n\n"
-            "For each candidate, write a 1-2 sentence explanation of why they match. "
-            'Respond with a JSON object: {"explanations": [{"person_id": str, "text": str}, ...]}. '
-            "No prose."
-        )
+        prompt = _build_explanations_prompt(query, candidates)
 
         try:
             import anthropic
@@ -258,13 +276,7 @@ class OpenAIBackend:
             return client_r
         client = client_r.value
 
-        bullets = "\n".join(f"- {pid}: {text[:300]}" for pid, text in candidates)
-        prompt = (
-            f"Query: {query}\n\nCandidates:\n{bullets}\n\n"
-            "For each candidate, write a 1-2 sentence explanation of why they match. "
-            'Respond with a JSON object: {"explanations": [{"person_id": str, "text": str}, ...]}. '
-            "No prose."
-        )
+        prompt = _build_explanations_prompt(query, candidates)
         try:
             import openai
         except ImportError as e:

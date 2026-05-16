@@ -190,7 +190,7 @@ class AnthropicBackend:
             return Err(BackendCallFailed(backend=self.name, detail=str(e)))
 
         text = "".join(getattr(b, "text", "") for b in getattr(resp, "content", []))
-        return _parse_explanations(text)
+        return _parse_explanations(text, candidates)
 
 
 @dataclass(slots=True)
@@ -281,27 +281,62 @@ class OpenAIBackend:
             return Err(BackendCallFailed(backend=self.name, detail=str(e)))
 
         text = resp.choices[0].message.content or ""
-        return _parse_explanations(text)
+        return _parse_explanations(text, candidates)
 
 
-def _parse_explanations(blob: str) -> Result[list[Explanation], OrchestratorError]:
-    start = blob.find("[")
-    end = blob.rfind("]")
-    if start < 0 or end < 0:
-        return Err(ParseRejected(detail="no JSON array in explanations response"))
-    try:
-        payload = json.loads(blob[start : end + 1])
-    except ValueError as e:
-        return Err(ParseRejected(detail=f"json: {e}"))
-    if not isinstance(payload, list):
-        return Err(ParseRejected(detail="explanations payload is not a list"))
-    out: list[Explanation] = []
-    for item in payload:
+_PLACEHOLDER_EXPLANATION = "Surfaced by retrieval; the LLM did not return a specific rationale."
+
+
+def _parse_explanations(
+    blob: str, candidates: list[tuple[str, str]]
+) -> Result[list[Explanation], OrchestratorError]:
+    """Parse the LLM's explanations payload and align to `candidates` 1:1.
+
+    Accepts either `{"explanations": [...]}` (current prompt) or a bare list
+    (older prompt / lenient model). Out-of-order entries are reordered to match
+    `candidates`; missing pids get a placeholder so the feed always has one
+    row per candidate.
+    """
+    start_obj = blob.find("{")
+    end_obj = blob.rfind("}")
+    start_arr = blob.find("[")
+    end_arr = blob.rfind("]")
+    has_obj = start_obj >= 0 and end_obj > start_obj
+    has_arr = start_arr >= 0 and end_arr > start_arr
+    # Whichever outer bracket appears first wins; otherwise prefer whatever's present.
+    prefer_arr = has_arr and (not has_obj or start_arr < start_obj)
+
+    raw: object
+    if prefer_arr:
+        try:
+            raw = json.loads(blob[start_arr : end_arr + 1])
+        except ValueError as e:
+            return Err(ParseRejected(detail=f"json: {e}"))
+    elif has_obj:
+        try:
+            parsed = json.loads(blob[start_obj : end_obj + 1])
+        except ValueError as e:
+            return Err(ParseRejected(detail=f"json: {e}"))
+        if not isinstance(parsed, dict):
+            return Err(ParseRejected(detail="explanations payload is not an object"))
+        raw = parsed.get("explanations", [])
+    else:
+        return Err(ParseRejected(detail="no JSON object or array in explanations response"))
+
+    if not isinstance(raw, list):
+        return Err(ParseRejected(detail="explanations field is not a list"))
+
+    by_pid: dict[str, str] = {}
+    for item in raw:
         if not isinstance(item, dict):
-            return Err(ParseRejected(detail="explanation entry not an object"))
+            continue
         pid = item.get("person_id")
         text = item.get("text")
-        if not isinstance(pid, str) or not isinstance(text, str):
-            return Err(ParseRejected(detail="bad explanation shape"))
-        out.append(Explanation(person_id=pid, text=text))
+        if isinstance(pid, str) and isinstance(text, str):
+            by_pid.setdefault(pid, text)
+
+    out = [
+        Explanation(person_id=pid, text=by_pid.get(pid, _PLACEHOLDER_EXPLANATION))
+        for pid, _ in candidates
+    ]
     return Ok(out)

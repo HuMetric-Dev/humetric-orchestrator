@@ -1,16 +1,18 @@
 [project]
 name = "humetric-orchestrator"
-version = "0.1.0"
+version = "0.2.0"
 description = "LLM-facing layer: query parsing, history, explained-feed generation"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Po-Hsuan Lai" }]
 dependencies = [
-    "humetric-core>=0.1,<0.2",
+    "humetric-core>=0.2,<0.3",
+    "humetric-store>=0.3,<0.4",
     "humetric-retrieval>=0.1,<0.2",
     "humetric-ranking>=0.1,<0.2",
     "humetric-embed>=0.1,<0.2",
+    "psycopg[binary]>=3.2,<4",
     "openai>=1.40,<2",
     "numpy>=1.26,<3",
 ]
@@ -27,6 +29,7 @@ dev = [
 
 [tool.uv.sources]
 humetric-core = { path = "../humetric-core", editable = true }
+humetric-store = { path = "../humetric-store", editable = true }
 humetric-retrieval = { path = "../humetric-retrieval", editable = true }
 humetric-ranking = { path = "../humetric-ranking", editable = true }
 humetric-embed = { path = "../humetric-embed", editable = true }

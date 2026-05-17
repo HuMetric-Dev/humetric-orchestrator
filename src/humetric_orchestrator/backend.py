@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from humetric_core import Err, Ok, ParsedQuery, Result
+from humetric_core import EntityType, Err, Ok, ParsedQuery, Result
 
 from humetric_orchestrator.errors import (
     BackendCallFailed,
@@ -18,7 +18,14 @@ You parse free-text recruiting queries into a structured JSON object. Be \
 literal about must-haves vs nice-to-haves. Only fields present in the schema \
 are allowed. If the user did not state a value, leave the field as its default \
 (null/empty). The `free_text` field should retain the user's original phrasing, \
-useful for semantic search.\
+useful for semantic search.
+
+`target_entity_types` says what the query is asking for. If the user is asking \
+about people (engineers, researchers, candidates, recruiters, designers), \
+use ["person"]. If asking about organizations (companies, firms, labs, \
+institutions, universities), use ["organization"]. If clearly asking for \
+both ("people at firms hiring..."), use ["person", "organization"]. When in \
+doubt, default to ["person"].\
 """
 
 _PARSE_JSON_SCHEMA: dict[str, Any] = {
@@ -30,15 +37,50 @@ _PARSE_JSON_SCHEMA: dict[str, Any] = {
         "location": {"type": ["string", "null"]},
         "min_followers": {"type": ["integer", "null"]},
         "min_years_experience": {"type": ["integer", "null"]},
+        "target_entity_types": {
+            "type": "array",
+            "items": {"enum": ["person", "organization"]},
+            "description": (
+                "Which entity types to retrieve. ['person'] for people queries, "
+                "['organization'] for company/lab/institution queries, both for "
+                "mixed-intent queries."
+            ),
+        },
     },
     "required": ["free_text"],
     "additionalProperties": False,
 }
 
+_ORG_INTENT_TOKENS: frozenset[str] = frozenset(
+    {
+        "firm",
+        "firms",
+        "company",
+        "companies",
+        "corporation",
+        "corporations",
+        "lab",
+        "labs",
+        "laboratory",
+        "laboratories",
+        "institution",
+        "institutions",
+        "university",
+        "universities",
+        "school",
+        "schools",
+        "employer",
+        "employers",
+        "organization",
+        "organizations",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Explanation:
-    person_id: str
+    entity_id: str
+    entity_type: EntityType
     text: str
 
 
@@ -55,14 +97,17 @@ _EXPLANATIONS_GROUNDING_RULE = (
 )
 
 
-def _build_explanations_prompt(query: str, candidates: list[tuple[str, str]]) -> str:
-    bullets = "\n".join(f"- {pid}: {text[:300]}" for pid, text in candidates)
+def _build_explanations_prompt(query: str, candidates: list[tuple[str, EntityType, str]]) -> str:
+    bullets = "\n".join(f"- {eid} ({et}): {text[:300]}" for eid, et, text in candidates)
     return (
         f"Query: {query}\n\n"
         f"Candidates:\n{bullets}\n\n"
         "For each candidate, write a 1-2 sentence explanation of why they match. "
+        "Frame person-type rationales around their skills and experience; frame "
+        "organization-type rationales around what the org does, its industry, or "
+        "its hiring focus. "
         f"{_EXPLANATIONS_GROUNDING_RULE} "
-        'Respond with a JSON object: {"explanations": [{"person_id": str, "text": str}, ...]}. '
+        'Respond with a JSON object: {"explanations": [{"entity_id": str, "text": str}, ...]}. '
         "No prose."
     )
 
@@ -75,7 +120,7 @@ class LLMBackend(Protocol):
     def write_explanations(
         self,
         query: str,
-        candidates: list[tuple[str, str]],
+        candidates: list[tuple[str, EntityType, str]],
     ) -> Result[list[Explanation], OrchestratorError]: ...
 
 
@@ -85,7 +130,7 @@ def _validate_parsed_query(payload: object) -> Result[ParsedQuery, OrchestratorE
     typed: dict[str, Any] = {str(k): v for k, v in payload.items()}
     # Pydantic strict mode rejects lists where tuples are declared; the LLM
     # always returns lists, so coerce at the boundary.
-    for k in ("must_skills", "nice_skills"):
+    for k in ("must_skills", "nice_skills", "target_entity_types"):
         v = typed.get(k)
         if isinstance(v, list):
             typed[k] = tuple(v)
@@ -93,6 +138,33 @@ def _validate_parsed_query(payload: object) -> Result[ParsedQuery, OrchestratorE
         return Ok(ParsedQuery(**typed))
     except (TypeError, ValueError) as e:
         return Err(ParseRejected(detail=str(e)))
+
+
+def _infer_target_entity_types(text: str) -> tuple[EntityType, ...]:
+    tokens = {t.strip(".,?!:;()").lower() for t in text.split()}
+    has_org = bool(tokens & _ORG_INTENT_TOKENS)
+    has_person_kw = bool(
+        tokens
+        & {
+            "engineer",
+            "engineers",
+            "developer",
+            "developers",
+            "researcher",
+            "researchers",
+            "candidate",
+            "candidates",
+            "people",
+            "person",
+            "scientist",
+            "scientists",
+        }
+    )
+    if has_org and has_person_kw:
+        return ("person", "organization")
+    if has_org:
+        return ("organization",)
+    return ("person",)
 
 
 @dataclass(slots=True)
@@ -107,6 +179,7 @@ class FakeBackend:
         skills_seen = [
             t for t in tokens if t in {"rust", "python", "go", "kafka", "react", "payments"}
         ]
+        targets = _infer_target_entity_types(text)
         return _validate_parsed_query(
             {
                 "free_text": text,
@@ -115,16 +188,21 @@ class FakeBackend:
                 "location": None,
                 "min_followers": None,
                 "min_years_experience": None,
+                "target_entity_types": targets,
             }
         )
 
     def write_explanations(
-        self, query: str, candidates: list[tuple[str, str]]
+        self, query: str, candidates: list[tuple[str, EntityType, str]]
     ) -> Result[list[Explanation], OrchestratorError]:
         return Ok(
             [
-                Explanation(person_id=pid, text=f"{self.canned_explanation}: {text[:60]}")
-                for pid, text in candidates
+                Explanation(
+                    entity_id=eid,
+                    entity_type=et,
+                    text=f"{self.canned_explanation}: {text[:60]}",
+                )
+                for eid, et, text in candidates
             ]
         )
 
@@ -183,7 +261,7 @@ class AnthropicBackend:
         return Err(ParseRejected(detail="no tool_use block in response"))
 
     def write_explanations(
-        self, query: str, candidates: list[tuple[str, str]]
+        self, query: str, candidates: list[tuple[str, EntityType, str]]
     ) -> Result[list[Explanation], OrchestratorError]:
         if not candidates:
             return Ok([])
@@ -267,7 +345,7 @@ class OpenAIBackend:
         return _validate_parsed_query(payload)
 
     def write_explanations(
-        self, query: str, candidates: list[tuple[str, str]]
+        self, query: str, candidates: list[tuple[str, EntityType, str]]
     ) -> Result[list[Explanation], OrchestratorError]:
         if not candidates:
             return Ok([])
@@ -300,13 +378,13 @@ _PLACEHOLDER_EXPLANATION = "Surfaced by retrieval; the LLM did not return a spec
 
 
 def _parse_explanations(
-    blob: str, candidates: list[tuple[str, str]]
+    blob: str, candidates: list[tuple[str, EntityType, str]]
 ) -> Result[list[Explanation], OrchestratorError]:
     """Parse the LLM's explanations payload and align to `candidates` 1:1.
 
     Accepts either `{"explanations": [...]}` (current prompt) or a bare list
     (older prompt / lenient model). Out-of-order entries are reordered to match
-    `candidates`; missing pids get a placeholder so the feed always has one
+    `candidates`; missing eids get a placeholder so the feed always has one
     row per candidate.
     """
     start_obj = blob.find("{")
@@ -338,17 +416,22 @@ def _parse_explanations(
     if not isinstance(raw, list):
         return Err(ParseRejected(detail="explanations field is not a list"))
 
-    by_pid: dict[str, str] = {}
+    by_eid: dict[str, str] = {}
     for item in raw:
         if not isinstance(item, dict):
             continue
-        pid = item.get("person_id")
+        # Accept either entity_id (new) or person_id (legacy LLM output).
+        eid = item.get("entity_id") or item.get("person_id")
         text = item.get("text")
-        if isinstance(pid, str) and isinstance(text, str):
-            by_pid.setdefault(pid, text)
+        if isinstance(eid, str) and isinstance(text, str):
+            by_eid.setdefault(eid, text)
 
     out = [
-        Explanation(person_id=pid, text=by_pid.get(pid, _PLACEHOLDER_EXPLANATION))
-        for pid, _ in candidates
+        Explanation(
+            entity_id=eid,
+            entity_type=et,
+            text=by_eid.get(eid, _PLACEHOLDER_EXPLANATION),
+        )
+        for eid, et, _ in candidates
     ]
     return Ok(out)
